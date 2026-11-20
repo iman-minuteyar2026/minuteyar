@@ -1,0 +1,96 @@
+name: Build Minuteyar APK
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build.yml'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Create Android project
+        run: |
+          mkdir -p app/src/main/java/ir/minuteyar app/src/main/res/xml app/src/main/res/values
+          cat > settings.gradle <<'GRADLE'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = 'Minuteyar'
+          include ':app'
+          GRADLE
+          cat > build.gradle <<'GRADLE'
+          plugins {
+              id 'com.android.application' version '8.7.3' apply false
+          }
+          GRADLE
+          cat > app/build.gradle <<'GRADLE'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'ir.minuteyar'
+              compileSdk 35
+              defaultConfig { applicationId 'ir.minuteyar'; minSdk 23; targetSdk 29; versionCode 1; versionName '1.0' }
+          }
+          GRADLE
+          cat > app/src/main/res/values/strings.xml <<'XML'
+          <resources><string name="app_name">دقیه‌یار</string></resources>
+          XML
+          cat > app/src/main/res/xml/accessibility_service.xml <<'XML'
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:notificationTimeout="100" android:canRetrieveWindowContent="true" android:description="خواندن متن پیشنهاد سفر برای محاسبه نرخ دقیقه" />
+          XML
+          cat > app/src/main/AndroidManifest.xml <<'XML'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/><application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="@string/app_name" android:allowBackup="false"><activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity><service android:name=".ReaderService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="false"><intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter><meta-data android:name="android.accessibilityservice" android:resource="@xml/accessibility_service"/></service></application></manifest>
+          XML
+          cat > app/src/main/java/ir/minuteyar/MainActivity.kt <<'KOTLIN'
+          package ir.minuteyar
+          import android.app.Activity
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          class MainActivity: Activity() {
+            override fun onCreate(savedInstanceState: Bundle?) { super.onCreate(savedInstanceState)
+              val l=LinearLayout(this); l.orientation=LinearLayout.VERTICAL; l.gravity=Gravity.CENTER; l.setPadding(28,28,28,28)
+              val t=TextView(this); t.text="دقیه‌یار\n\nبرای محاسبه مبلغ هر دقیقه، مجوزها را فعال کنید."; t.textSize=20f; l.addView(t)
+              val b=Button(this); b.text="فعال‌سازی خواندن صفحه"; b.setOnClickListener{startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))}; l.addView(b)
+              val o=Button(this); o.text="اجازه پنجره شناور"; o.setOnClickListener{if(!Settings.canDrawOverlays(this)) startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))}; l.addView(o)
+              setContentView(l)
+            }
+          }
+          KOTLIN
+          cat > app/src/main/java/ir/minuteyar/ReaderService.kt <<'KOTLIN'
+          package ir.minuteyar
+          import android.accessibilityservice.AccessibilityService
+          import android.view.accessibility.AccessibilityEvent
+          import android.graphics.PixelFormat
+          import android.view.WindowManager
+          import android.view.Gravity
+          import android.widget.TextView
+          import android.graphics.Color
+          import android.os.Handler
+          import android.os.Looper
+          class ReaderService: AccessibilityService() {
+            private var overlay:TextView?=null; private lateinit var wm:WindowManager
+            override fun onServiceConnected(){ wm=getSystemService(WINDOW_SERVICE) as WindowManager; show("دقیه‌یار فعال") }
+            private fun show(s:String){ Handler(Looper.getMainLooper()).post { if(overlay==null){overlay=TextView(this).apply{setPadding(22,14,22,14);textSize=18f;setTextColor(Color.WHITE);setBackgroundColor(0xDD222222.toInt())}; val p=WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT,WindowManager.LayoutParams.WRAP_CONTENT, if(android.os.Build.VERSION.SDK_INT>=26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,PixelFormat.TRANSLUCENT);p.gravity=Gravity.TOP or Gravity.CENTER_HORIZONTAL;p.y=100;wm.addView(overlay,p) }; overlay?.text=s } }
+            private fun digits(s:String):String { val map="۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩";return s.map{c->val i=map.indexOf(c);if(i>=0)(i%10).toString() else c.toString()}.joinToString("") }
+            override fun onAccessibilityEvent(e:AccessibilityEvent?) { if(e==null)return; val root=rootInActiveWindow?:return; val list=ArrayList<String>(); fun walk(n:android.view.accessibility.AccessibilityNodeInfo?){if(n==null)return;n.text?.let{list.add(it.toString())}; for(i in 0 until n.childCount)walk(n.getChild(i))};walk(root); val s=digits(list.joinToString(" ")); val money=Regex("([0-9]{4,8})\\s*(?:تومان|ریال)?").findAll(s).map{it.groupValues[1].toLong()}.maxOrNull(); val times=Regex("([0-9]{1,3})\\s*(?:دقیقه|min)").findAll(s).map{it.groupValues[1].toInt()}.toList(); if(money!=null && times.isNotEmpty()){val mins=times.sum().coerceAtLeast(1);show("${money/mins} تومان/دقیقه")}}
+            override fun onInterrupt(){}
+          }
+          KOTLIN
+      - name: Build APK
+        run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: minuteyar-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
